@@ -191,6 +191,26 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z72. weekly cron exposes workflow_dispatch inputs for policy tuning (iter 109)"
+miss=""
+W="$ROOT/../../.github/workflows/oia-audit-weekly.yml"
+# workflow_dispatch.inputs block present
+grep -q "threshold:" "$W" 2>/dev/null || miss="$miss no-threshold-input"
+grep -q "alert_on_new_severity:" "$W" 2>/dev/null || miss="$miss no-alert-sev-input"
+# Both inputs have safe defaults (scheduled runs work without manual entry)
+grep -q "default: '0.85'" "$W" 2>/dev/null || miss="$miss no-threshold-default"
+grep -q "default: high" "$W" 2>/dev/null || miss="$miss no-sev-default"
+# Drift step uses the inputs via "$THRESHOLD" / "$ALERT_SEV"
+grep -q 'THRESHOLD="${{ inputs.threshold' "$W" 2>/dev/null || miss="$miss no-threshold-var"
+grep -q 'ALERT_SEV="${{ inputs.alert_on_new_severity' "$W" 2>/dev/null || miss="$miss no-alert-sev-var"
+grep -q -- '--threshold "\$THRESHOLD"' "$W" 2>/dev/null || miss="$miss no-threshold-passthrough"
+grep -q -- '--alert-on-new-severity "\$ALERT_SEV"' "$W" 2>/dev/null || miss="$miss no-alert-sev-passthrough"
+# Choice type lists all 7 severity values from iter-78 enum
+for sev in info low medium warn high error critical; do
+  grep -q "          - ${sev}" "$W" 2>/dev/null || miss="$miss no-choice-${sev}"
+done
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z71. weekly cron drift step fails on slow-path regression (iter 108)"
 miss=""
 W="$ROOT/../../.github/workflows/oia-audit-weekly.yml"
@@ -803,7 +823,9 @@ step "17z42. weekly cron uses --alert-on-new-severity + Stage 12 verifies (iter 
 miss=""
 # Weekly cron wires the gate
 W="$ROOT/../../.github/workflows/oia-audit-weekly.yml"
-grep -q -- "--alert-on-new-severity high" "$W" 2>/dev/null || miss="$miss no-cron-wired"
+# iter 109 — accept either literal `high` (pre-iter-109) or parameterized
+# `"$ALERT_SEV"` (post-iter-109 with workflow_dispatch input).
+grep -qE -- '--alert-on-new-severity (high|"\$ALERT_SEV")' "$W" 2>/dev/null || miss="$miss no-cron-wired"
 # Roundtrip Stage 12 added
 F="$ROOT/scripts/test-pipeline-roundtrip.mjs"
 grep -q "Stage 12 — --alert-on-new-severity orthogonal gate" "$F" 2>/dev/null || miss="$miss no-stage-12"

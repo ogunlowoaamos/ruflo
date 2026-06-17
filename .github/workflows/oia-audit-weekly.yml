@@ -21,6 +21,27 @@ on:
   schedule:
     - cron: '17 4 * * 0'  # Sundays at 04:17 UTC
   workflow_dispatch:        # manual trigger for ad-hoc audits
+    # iter 109 — parameterize the policy thresholds so ad-hoc runs can
+    # explore stricter/looser gates without editing YAML.
+    inputs:
+      threshold:
+        description: 'Structural similarity threshold (default 0.85 — scheduled). Lower = stricter drift alert.'
+        type: string
+        default: '0.85'
+        required: false
+      alert_on_new_severity:
+        description: 'Alert on any introduced finding ≥ this severity'
+        type: choice
+        options:
+          - info
+          - low
+          - medium
+          - warn
+          - high
+          - error
+          - critical
+        default: high
+        required: false
   push:
     branches: [main]
     paths:
@@ -115,11 +136,15 @@ jobs:
           # iter 79 — also gate on new HIGH-severity findings. Catches the
           # case where structure stayed similar but a security regression
           # appeared (e.g., new mcp-scan HIGH finding). Either gate can fire.
+          # iter 109 — parameterized policy thresholds via workflow_dispatch
+          # inputs. Scheduled runs fall back to 0.85 / high.
+          THRESHOLD="${{ inputs.threshold || '0.85' }}"
+          ALERT_SEV="${{ inputs.alert_on_new_severity || 'high' }}"
           node plugins/ruflo-metaharness/scripts/drift-from-history.mjs \
             --baseline-file /tmp/prior/oia-audit.json \
             --dry-run \
-            --threshold 0.85 \
-            --alert-on-new-severity high \
+            --threshold "$THRESHOLD" \
+            --alert-on-new-severity "$ALERT_SEV" \
             --format json \
             > /tmp/drift-trend.json || true
           # Extract verdict for the workflow summary
