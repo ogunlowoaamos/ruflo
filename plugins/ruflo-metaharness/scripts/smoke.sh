@@ -191,6 +191,20 @@ grep -q "execCli(\[\s*'-y'\s*,\s*'metaharness@latest'" "$F" 2>/dev/null || \
 grep -q "cwd: opts" "$F" || miss="$miss no-cwd-passthrough"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
+step "17z23. ADR-150 implementation notes reflect iters 13-59 (iter 60)"
+miss=""
+ADR="$ROOT/../../v3/docs/adr/ADR-150-metaharness-integration-surfaces.md"
+grep -q "Phase 3 §3.1 ✅ iters 33–59" "$ADR" 2>/dev/null || miss="$miss no-phase3-status"
+grep -q "sixty iterations of /loop" "$ADR" 2>/dev/null || miss="$miss no-60-iter-marker"
+grep -q "Phase 2 continued (iters 13–32)" "$ADR" 2>/dev/null || miss="$miss no-phase2-continued"
+grep -q "Phase 3 §3.1 — Genome Similarity Search (iters 33–59)" "$ADR" 2>/dev/null || miss="$miss no-phase3-section"
+grep -q "Real-data bug-discovery arc (iters 47-51)" "$ADR" 2>/dev/null || miss="$miss no-bug-arc"
+grep -q "Anti-regression locks (iters 42-44)" "$ADR" 2>/dev/null || miss="$miss no-anti-regression"
+grep -q "Parallelization sweep (iters 56-59)" "$ADR" 2>/dev/null || miss="$miss no-perf-sweep"
+grep -q "14 distinct surfaces" "$ADR" 2>/dev/null || miss="$miss no-surface-count"
+grep -q "Fleet status (post-iter-59)" "$ADR" 2>/dev/null || miss="$miss no-post-iter-59-fleet"
+[[ -z "$miss" ]] && ok || bad "$miss"
+
 step "17z22. oia-audit timing field + parallel-speedup gate (iter 59)"
 miss=""
 OIA="$ROOT/scripts/oia-audit.mjs"
@@ -232,8 +246,9 @@ grep -q "getaddrinfo\|ECONNREFUSED\|ETIMEDOUT" "$HARNESS" 2>/dev/null || miss="$
 # Gap C: drift-from-history probes oia-audit to disambiguate no-history vs dep-absent
 DRIFT="$ROOT/scripts/drift-from-history.mjs"
 grep -q "disambiguate" "$DRIFT" 2>/dev/null || miss="$miss no-disambiguate-comment"
-grep -q "probe.json?.degraded === true" "$DRIFT" 2>/dev/null || miss="$miss no-probe-degraded-check"
-grep -q "emitAndExit.*degraded: true" "$DRIFT" 2>/dev/null || miss="$miss no-degraded-exit-3"
+# iter 58 refactored the probe into the parallel batch — accept either form
+grep -qE "probe\.json\?\.degraded === true|auditResult\.json\?\.degraded === true" "$DRIFT" 2>/dev/null || miss="$miss no-degraded-check"
+grep -q "degraded: true" "$DRIFT" 2>/dev/null || miss="$miss no-degraded-exit-3"
 [[ -z "$miss" ]] && ok || bad "$miss"
 
 step "17z19. oia-audit parallelizes 5 subprocesses (iter 56 — closes iter-55 gap A)"

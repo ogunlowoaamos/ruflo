@@ -1,7 +1,7 @@
 # ADR-150 — MetaHarness Integration Surfaces in `npx ruflo`
 
-**Status**: Implemented (Phase 1 ✅ iters 1–3 · Phase 2 ✅ iters 4–12 · KRR retrain pending production data · Phase 3 scoped in [ADR-151](ADR-151-harness-intelligence-layer.md))
-**Date**: 2026-06-16 (revised 2026-06-16 — twelve iterations of /loop)
+**Status**: Implemented (Phase 1 ✅ iters 1–3 · Phase 2 ✅ iters 4–32 · Phase 3 §3.1 ✅ iters 33–59 · KRR retrain pending production data · Phase 3 §3.2-§3.5 scoped in [ADR-151](ADR-151-harness-intelligence-layer.md))
+**Date**: 2026-06-16 (revised 2026-06-16 — sixty iterations of /loop)
 **Related**: ADR-148 (cost-optimal router lifecycle via `@metaharness/router`), ADR-149 (per-model cost-optimal routing), ADR-026 (3-tier model routing), ADR-097 (federation budget circuit breaker), ADR-124 (optional native dependencies), ADR-144 (agent-authorization-propagation)
 **External reference**: [`ruvnet/agent-harness-generator`](https://github.com/ruvnet/agent-harness-generator) — the upstream that publishes `metaharness` + `@metaharness/*`. Same author (rUv), explicitly designed around ruflo primitives.
 **Research dossier**: published as a gist (linked from the tracking issue) with full graded-evidence sourcing.
@@ -253,6 +253,112 @@ real routing data; retrain in a follow-up PR.
   plugin.json manifest)
 - 117 SKILL.md files across 34 plugins (was 117/32 — adding
   6 new SKILL.md files from this plugin pushed the count)
+
+### Phase 2 continued (iters 13–32)
+Additional Phase-2 surface landed over iters 13-32, all on the same
+`feat/metaharness-integration-research` branch:
+
+- **iter 15** `audit-trend.mjs` — diff two `oia-audit` records (drift
+  detection). Pulls baseline + current snapshots from
+  `metaharness-audit` namespace; reports composite severity delta +
+  per-component status + introduced/cleared findings.
+- **iter 16** `audit-list.mjs` — enumerate timestamped records in
+  `metaharness-audit` namespace, with `--since 30d`-style filtering.
+- **iter 20-23** `metaharness-tools.ts` MCP surface — 7 tools registered:
+  score, genome, mcp-scan, threat-model, oia-audit, audit-list,
+  audit-trend. Each backed by subprocess invocation through the same
+  `_harness.mjs` bridge. `test-mcp-tools.mjs` enforces the runtime
+  contract: `{success, data, degraded, exitCode}` shape, never-throws
+  invariant.
+- **iter 27-29** mint hardening — explicit npx argv (was a single
+  string token), `cwd: dirname(target)` + `basename(target)` as cliName
+  workaround for upstream `--target` bug (now fixed at metaharness@0.1.13).
+- **iter 30-32** `.harness/mcp-policy.json` + manifest.json — security
+  posture: default-deny, allow shell/network/file-write: false,
+  audit-log on; iter-31 exact-pins close LOW severity vector; iter-32
+  manifest documents witness-key gap.
+
+### Phase 3 §3.1 — Genome Similarity Search (iters 33–59)
+Phase-3 §3.1 from [ADR-152](ADR-152-genome-similarity-search.md) shipped
+across 27 iterations. The implementation is now deeply integrated across
+**14 distinct surfaces**:
+
+| # | Surface | Iter |
+|---|---|---|
+| 1 | Spike with 2 invariants (selfMatch, verticalAffinity) | 35 |
+| 2 | Production module `_similarity.mjs` (5 exports) | 36 |
+| 3 | CLI skill `similarity.mjs` (file + memory inputs) | 36 |
+| 4 | MCP tool `metaharness_similarity` | 36 |
+| 5 | CLI dispatcher entry | 36 |
+| 6 | MCP runtime contract test (74→115 assertions) | 37, 43, 52 |
+| 7 | Pipeline consumers (oia-audit fingerprint + audit-trend) | 38 |
+| 8 | 53 unit-test assertions over 8 phases | 39 |
+| 9 | Dedicated CI job `similarity-tests` | 40 |
+| 10 | Performance benchmark with regression gate | 41 |
+| 11 | End-to-end pipeline roundtrip test | 47, 49, 51 |
+| 12 | CI job `metaharness-real-data` running roundtrip | 48 |
+| 13 | Doctor health check distinct from upstream | 45, 52 |
+| 14 | `drift-from-history` one-command primitive + MCP tool | 53, 54 |
+
+#### Real-data bug-discovery arc (iters 47-51)
+End-to-end roundtrip caught FOUR latent bugs that synthetic-fixture
+tests had missed for 9+ iterations each:
+- **iter 47** — schema mismatch: oia-audit captured fingerprint via
+  the wrong CLI binary (harness vs metaharness; different schemas).
+  Fingerprint silently fed wrong shape to `_similarity.mjs`. Fixed by
+  routing score+genome through `runMetaharness`.
+- **iter 49** — mcp-scan dead-code: `audit-trend` read `json.findings`
+  expecting an array, but mcp-scan emitted text-only. Flagged.
+- **iter 50** — closed (b) via shared `parseMcpScanText` parser in
+  `_harness.mjs`, wired into both mcp-scan.mjs and oia-audit.mjs.
+- **iter 51** — proved drift detection actually fires on mutated
+  audits, not just confirms self-match. Stage 7 mutates all 3
+  similarity components; verdict flips from near-identical to
+  moderate-drift; alert at 0.95 fires.
+
+#### Anti-regression locks (iters 42-44)
+- **iter 42** — fixed dispatcher's flag-drop bug (silent for 6 iters).
+  Iter-36 wired SUBCOMMANDS but only `context.args` (positionals) were
+  forwarded to subprocess. Now reads `context.flags` and re-kebabs
+  camelCase→kebab. Affects ALL metaharness subcommands.
+- **iter 43** — generalized iter-42's catch into 16 structural
+  positive-case assertions on the MCP runtime test.
+- **iter 44** — MCP wrapper `success = (exitCode === 0)` (was
+  `!degraded`). Affects all 9 metaharness MCP tools. Documented 3
+  observable cases.
+
+#### Parallelization sweep (iters 56-59)
+Composite operations now use Promise.all where dependency graph allows:
+- **iter 56** — oia-audit's 5 subprocess calls parallelize → 4.59x
+  measured speedup on Apple Silicon / Node 22 (close to theoretical 5x).
+- **iter 58** — drift-from-history's audit-list + oia-audit
+  parallelize → ~30% reduction. Folded the iter-57 probe into the same
+  batch.
+- **iter 59** — `timing.{wallMs, sumComponentMs, parallelSpeedup}`
+  field in oia-audit output. Smoke gate asserts speedup > 2.0 to catch
+  silent serialization regression.
+
+#### Iter-55 graceful-degradation drill expansion
+The architectural-constraint workflow (`no-metaharness-smoke.yml`)
+drilled only 4 skills pre-iter-55. Extended to 7. Discovered 3 latent
+gaps (oia-audit timeout, mint marker missing, drift-from-history exit
+code), all closed in iters 56-57.
+
+#### Upstream contribution
+Two issues filed at `ruvnet/agent-harness-generator`:
+- [#15](https://github.com/ruvnet/agent-harness-generator/issues/15) —
+  harness vs metaharness CLI schema confusion (iter 47 discovery)
+- [#16](https://github.com/ruvnet/agent-harness-generator/issues/16) —
+  harness mcp-scan plain text instead of JSON (iter 50 discovery)
+Both still OPEN as of iter 59. Downstream workarounds remain in place.
+
+### Fleet status (post-iter-59)
+- Smoke step count: 19 → 62 (43 new structural invariants since iter 8)
+- MCP tool runtime contract: 115 assertions across 9 tools
+- Real-data roundtrip: 31 pipeline assertions
+- Unit tests: 53 similarity-module assertions
+- Total ruflo-metaharness smoke surface: ~260 assertions
+- 33/33 plugin fleet still green
 
 ### Quote architecture invariant — no static metaharness imports
 
