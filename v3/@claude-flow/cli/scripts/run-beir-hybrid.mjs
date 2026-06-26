@@ -45,8 +45,10 @@ const BASELINES_BY_DATASET = {
   scidocs:  { 'BM25 (Lucene)': 0.158, 'DocT5query': 0.162, 'TAS-B': 0.149, 'GenQ': 0.143, 'ColBERT': 0.145, 'Contriever': 0.165, 'GTR-XL': 0.174, 'SPLADE++': 0.159, 'BGE-large-v1.5 (pub)': 0.225, 'SBERT msmarco': 0.122 },
 };
 // Iter 3: dataset-specific RRF weights for symmetric + dense-favored regimes (arguana: dense 1.6x stronger than BM25).
+// Iter 4: nfcorpus medical IR — downweight BM25 (0.7) to favor dense semantics over lexical noise.
 const DATASET_RRF_WEIGHTS = {
   arguana: { dense: 1.5, bm25: 1.0 },  // symmetric retrieval favors dense; boost it over weak BM25
+  nfcorpus: { dense: 1.0, bm25: 0.7 }, // medical IR: dense semantics > BM25 keywords; reduce BM25 contribution
 };
 function detectDataset(path) {
   const p = path.toLowerCase();
