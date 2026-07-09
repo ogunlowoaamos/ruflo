@@ -52,6 +52,7 @@ export interface AgentTransport {
 export interface QuicTransportConfig {
   port?: number;
   host?: string;
+  serverName?: string;
   [key: string]: unknown;
 }
 
@@ -110,9 +111,101 @@ export interface LoadedFederationTransport {
   /** The live transport. Send/receive against this. */
   transport: AgentTransport;
   /** Which loader branch resolved. Useful for logs/metrics. */
-  source: 'midstreamer-native' | 'agentic-flow-loader';
+  source: 'midstreamer-native' | 'agentic-flow-loader' | 'websocket-fallback';
   /** Free-form note when a probe failed (helps explain a fallback). */
   fallbackReason?: string;
+}
+
+type WebSocketLike = {
+  on: (event: string, handler: (...args: unknown[]) => void) => void;
+  send: (data: string, cb?: (err?: Error) => void) => void;
+  close: () => void;
+};
+
+type WebSocketServerLike = {
+  on: (event: string, handler: (...args: unknown[]) => void) => void;
+  close: (cb?: () => void) => void;
+};
+
+/**
+ * Plugin-owned ADR-104 WebSocket fallback. This closes issue #2618's
+ * failure mode: current `agentic-flow` releases do not export
+ * `agentic-flow/transport/loader`, so the federation plugin must not
+ * depend on that subpath for its baseline wire transport.
+ */
+class WebSocketFallbackTransport implements AgentTransport {
+  [key: string]: unknown;
+
+  private handlers: Array<(address: string, message: AgentMessage) => void> = [];
+  private server: WebSocketServerLike | null = null;
+  private sockets = new Set<WebSocketLike>();
+
+  constructor(private readonly config: QuicTransportConfig = {}) {}
+
+  async send(address: string, message: AgentMessage): Promise<void> {
+    const { default: WebSocket } = await import('ws');
+    const url = address.includes('://') ? address : `ws://${address}`;
+    const socket = new WebSocket(url) as WebSocketLike;
+
+    await new Promise<void>((resolve, reject) => {
+      socket.on('open', () => {
+        socket.send(JSON.stringify(message), (err?: Error) => {
+          socket.close();
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      socket.on('error', (err: unknown) => reject(err instanceof Error ? err : new Error(String(err))));
+    });
+  }
+
+  onMessage(handler: (address: string, message: AgentMessage) => void): void {
+    this.handlers.push(handler);
+  }
+
+  async listen(port = Number(this.config.port ?? 0), host = String(this.config.host ?? '0.0.0.0')): Promise<void> {
+    const { WebSocketServer } = await import('ws');
+    const server = new WebSocketServer({ port, host }) as WebSocketServerLike;
+    this.server = server;
+
+    await new Promise<void>((resolve, reject) => {
+      server.on('listening', () => resolve());
+      server.on('error', (err: unknown) => reject(err instanceof Error ? err : new Error(String(err))));
+      server.on('connection', (socket: unknown, request: unknown) => {
+        const ws = socket as WebSocketLike;
+        this.sockets.add(ws);
+        const remoteAddress = ((request as { socket?: { remoteAddress?: string; remotePort?: number } })?.socket);
+        const address = remoteAddress?.remoteAddress
+          ? `${remoteAddress.remoteAddress}${remoteAddress.remotePort ? `:${remoteAddress.remotePort}` : ''}`
+          : 'unknown';
+
+        ws.on('message', (data: unknown) => {
+          try {
+            const raw = typeof data === 'string'
+              ? data
+              : Buffer.isBuffer(data)
+                ? data.toString('utf8')
+                : String(data);
+            const message = JSON.parse(raw) as AgentMessage;
+            for (const handler of this.handlers) handler(address, message);
+          } catch {
+            // Drop malformed frames. Signature/envelope validation happens
+            // above this layer in inbound-dispatcher.
+          }
+        });
+        ws.on('close', () => this.sockets.delete(ws));
+      });
+    });
+  }
+
+  async close(): Promise<void> {
+    for (const socket of this.sockets) socket.close();
+    this.sockets.clear();
+    if (this.server) {
+      await new Promise<void>((resolve) => this.server?.close(resolve));
+      this.server = null;
+    }
+  }
 }
 
 /**
@@ -217,8 +310,9 @@ async function probeMidstreamerTransport(
  *
  * Failure mode: if midstreamer is requested but rejects (stub, init
  * error, missing package), this function falls through to the
- * agentic-flow loader silently — the federation peer always gets a
- * transport (WebSocket fallback in the worst case, per ADR-104).
+ * agentic-flow loader. If current agentic-flow does not export its
+ * historical loader subpath, the plugin-owned WebSocket fallback is
+ * used directly (ADR-104, #2618).
  */
 export async function loadFederationTransport(
   config?: QuicTransportConfig,
@@ -229,17 +323,17 @@ export async function loadFederationTransport(
   }
 
   const transport = await loadAgenticFlowQuicTransport(config);
-  if (!transport) {
-    throw new Error(
-      'No federation transport available. Install `agentic-flow` ' +
-        '(default) or `midstreamer` and set `MIDSTREAMER_QUIC_NATIVE=1` ' +
-        '(per ADR-120). Both are now optional peer dependencies — at ' +
-        'least one must be present at runtime.',
-    );
+  if (transport) {
+    return {
+      transport,
+      source: 'agentic-flow-loader',
+      fallbackReason: probe?.reason,
+    };
   }
+
   return {
-    transport,
-    source: 'agentic-flow-loader',
-    fallbackReason: probe?.reason,
+    transport: new WebSocketFallbackTransport(config),
+    source: 'websocket-fallback',
+    fallbackReason: probe?.reason ?? 'agentic-flow transport loader unavailable; using plugin-owned WebSocket fallback',
   };
 }

@@ -16,6 +16,9 @@
 #      remains allowed (that is the intentional optional-path).
 #   2. verification/witness-fixes.json's `ADR-104-transport` entry must
 #      NOT declare `agentic-flow/transport/loader` as its `marker`.
+#   3. ADR-104's supported smoke import target is the federation plugin
+#      loader, and that loader owns a WebSocket fallback for current
+#      agentic-flow releases that do not export `./transport/loader`.
 name: no-phantom-agentic-flow-subpath
 
 on:
@@ -23,11 +26,17 @@ on:
     branches: [main]
     paths:
       - 'v3/@claude-flow/plugin-agent-federation/src/**'
+      - 'v3/@claude-flow/plugin-agent-federation/dist/**'
+      - 'v3/docs/adr/ADR-104-federation-wire-transport.md'
+      - 'scripts/smoke-adr104-transport.mjs'
       - 'verification/witness-fixes.json'
       - '.github/workflows/no-phantom-agentic-flow-subpath.yml'
   pull_request:
     paths:
       - 'v3/@claude-flow/plugin-agent-federation/src/**'
+      - 'v3/@claude-flow/plugin-agent-federation/dist/**'
+      - 'v3/docs/adr/ADR-104-federation-wire-transport.md'
+      - 'scripts/smoke-adr104-transport.mjs'
       - 'verification/witness-fixes.json'
       - '.github/workflows/no-phantom-agentic-flow-subpath.yml'
   workflow_dispatch:
@@ -80,3 +89,6 @@ jobs:
             }
             console.log('OK — ADR-104-transport marker is \"' + adr104.marker + '\" (not the phantom subpath).');
           "
+
+      - name: Rule 3 — ADR-104 smoke import target must be plugin loader
+        run: node scripts/smoke-adr104-transport.mjs

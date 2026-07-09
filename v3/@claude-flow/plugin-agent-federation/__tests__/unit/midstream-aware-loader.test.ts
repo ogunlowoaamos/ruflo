@@ -4,9 +4,10 @@
  *
  * The loader's job is narrow: when MIDSTREAMER_QUIC_NATIVE=1 AND a
  * real (non-stub) midstreamer module is importable, return it.
- * Otherwise, fall through to the agentic-flow loader. These tests
- * verify both branches by stubbing the dynamic import / mocking the
- * agentic-flow loader where needed.
+ * Otherwise, fall through to the agentic-flow loader and then the
+ * plugin-owned WebSocket fallback if that loader is unavailable. These
+ * tests verify the branch selection by stubbing dynamic imports where
+ * needed.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -30,6 +31,24 @@ vi.mock('agentic-flow/transport/loader', async () => {
       // Marker so we can assert which branch resolved
       __mockSource: 'agentic-flow-mock',
     })),
+  };
+});
+
+vi.mock('ws', async () => {
+  class MockWebSocket {
+    on() {}
+    send(_data: string, cb?: (err?: Error) => void) { cb?.(); }
+    close() {}
+  }
+  class MockWebSocketServer {
+    on(event: string, handler: () => void) {
+      if (event === 'listening') queueMicrotask(handler);
+    }
+    close(cb?: () => void) { cb?.(); }
+  }
+  return {
+    default: MockWebSocket,
+    WebSocketServer: MockWebSocketServer,
   };
 });
 
@@ -103,6 +122,6 @@ describe('loadFederationTransport — ADR-120 Step 2', () => {
       expect.arrayContaining(['transport', 'source']),
     );
     // `source` must be one of the two documented values.
-    expect(['midstreamer-native', 'agentic-flow-loader']).toContain(loaded.source);
+    expect(['midstreamer-native', 'agentic-flow-loader', 'websocket-fallback']).toContain(loaded.source);
   });
 });

@@ -28,9 +28,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const REPO_ROOT = process.cwd();
 const VERIFY = resolve(REPO_ROOT, 'plugins/ruflo-core/scripts/witness/verify.mjs');
@@ -96,11 +96,12 @@ console.log('\nCase 1: @noble/ed25519 not installed (source-only)');
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// ── Case 2: all manifest files missing → exit 2 (precondition) ──────
+// ── Case 2: dist files missing → exit 2 (precondition) ──────────────
 // Point verify.mjs at an isolated root that DOES have @noble/ed25519
-// reachable (symlinked from the real install) but has none of the
-// manifest's dist/ files — mimicking a clean clone with no build run.
-console.log('\nCase 2: all manifest files missing (source-only, deps installed)');
+// reachable (symlinked from the real install), has source files copied
+// from the checkout, but has none of the manifest's dist/ files —
+// mimicking a clean clone with dependencies installed and no build run.
+console.log('\nCase 2: dist manifest files missing (source-only, deps installed)');
 {
   const tmp = mkdtempSync(join(tmpdir(), 'witness-smoke-nobuild-'));
   // Make @noble/ed25519 reachable by symlinking node_modules.
@@ -114,6 +115,16 @@ console.log('\nCase 2: all manifest files missing (source-only, deps installed)'
       // fs.symlinkSync via spawnSync to avoid extra import for the rare-path branch.
       spawnSync('ln', ['-s', src, dst]);
     } catch { /* best-effort */ }
+  }
+
+  const realManifest = JSON.parse(readFileSync(REAL_MANIFEST, 'utf8'));
+  for (const fix of realManifest.manifest.fixes) {
+    if (fix.file.includes('/dist/')) continue;
+    const src = resolve(REPO_ROOT, fix.file);
+    const dst = resolve(tmp, fix.file);
+    if (!existsSync(src)) continue;
+    mkdirSync(dirname(dst), { recursive: true });
+    cpSync(src, dst);
   }
 
   const out = spawnSync('node', [VERIFY, '--manifest', REAL_MANIFEST, '--root', tmp, '--json'], {
@@ -133,30 +144,36 @@ console.log('\nCase 2: all manifest files missing (source-only, deps installed)'
   );
   record(
     'output carries a precondition tag',
-    /noble-ed25519-not-installed|dist-not-built/.test(out.stdout + out.stderr),
+    /dist-not-built/.test(out.stdout + out.stderr),
     `combined output=${(out.stdout + out.stderr).slice(0, 400)}`,
   );
 
   rmSync(tmp, { recursive: true, force: true });
 }
 
-// ── Case 3: built tree → never exit 2 (precondition is one-way) ─────
-// On a built tree the verifier may produce 0 (clean) or 1 (some real
-// regression caught) — both mean verification actually ran. What it
-// must NEVER produce here is exit 2, because that would mean a built
-// tree was mis-classified as "needs install/build" and the scheduled
-// runner would silently skip filing real regressions.
-console.log('\nCase 3: built tree never reports precondition');
+// ── Case 3: current checkout classification is explicit ─────────────
+// This CI job installs deps but intentionally does not build dist. Local
+// dev runs often have dist from a prior build. Accept either shape, but
+// require the machine-readable reason to be precise.
+console.log('\nCase 3: current checkout classification is explicit');
 {
-  const out = spawnSync('node', [VERIFY, '--manifest', REAL_MANIFEST], {
+  const out = spawnSync('node', [VERIFY, '--manifest', REAL_MANIFEST, '--json'], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
   });
-  record(
-    'exit code is NOT 2 (built tree should never be flagged as a precondition miss)',
-    out.status !== 2,
-    `got exit=${out.status}, tail=${(out.stdout + out.stderr).slice(-300)}`,
-  );
+  if (out.status === 2) {
+    record(
+      'exit 2 is specifically dist-not-built, not missing dependency',
+      /"precondition":\s*"dist-not-built"/.test(out.stdout),
+      `got exit=2, stdout=${out.stdout.slice(0, 300)}, stderr=${out.stderr.slice(0, 300)}`,
+    );
+  } else {
+    record(
+      'built/current tree verification actually ran',
+      out.status === 0 || out.status === 1,
+      `got exit=${out.status}, tail=${(out.stdout + out.stderr).slice(-300)}`,
+    );
+  }
 }
 
 console.log('');

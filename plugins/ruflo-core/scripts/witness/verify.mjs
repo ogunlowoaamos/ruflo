@@ -73,16 +73,23 @@ const summary = {
   missing: fileResults.filter(r => r.status === 'missing').length,
 };
 
-// Issue #1880 — heuristic: if *every* manifest entry is missing AND at
-// least one references a `/dist/` path, the checkout was source-only
-// (no `npm run build`). That's a precondition failure, not a regression.
-// Anything more nuanced (partial dist build, real regressions, etc.)
-// still lands in the normal exit-1 path.
+// Issue #1880 / #2528 — heuristic: if the only missing entries are
+// generated `/dist/` artifacts and no marker regressed, the checkout was
+// source-only (dependencies may be installed, but no build ran). That's a
+// precondition failure, not a regression. Source-file drift is still
+// reported in the JSON summary, but the operator action is the same:
+// install + build before verifying the dist-layer witness entries.
 const allMissing = fileResults.length > 0
                 && summary.missing === fileResults.length;
-const referencesDist = fileResults.some(r => r.file && r.file.includes(`${sep}dist${sep}`)
-                                          || (r.file && r.file.includes('/dist/')));
-if (allMissing && referencesDist) {
+const missingResults = fileResults.filter(r => r.status === 'missing');
+const missingOnlyDist = missingResults.length > 0
+  && missingResults.every(r => r.file && (
+    r.file.includes(`${sep}dist${sep}`) || r.file.includes('/dist/')
+  ));
+const referencesDist = fileResults.some(r => r.file && (
+  r.file.includes(`${sep}dist${sep}`) || r.file.includes('/dist/')
+));
+if ((allMissing && referencesDist) || (missingOnlyDist && summary.regressed === 0)) {
   if (asJson) {
     console.log(JSON.stringify(
       { ok: false, precondition: 'dist-not-built', signature: sig, summary },
